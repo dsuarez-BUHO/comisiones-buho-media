@@ -818,6 +818,8 @@ class PipelineResult:
     vendedores: list[str]
     resumen_global: tuple[io.BytesIO, str]
     reportes_vendedor: dict[str, tuple[io.BytesIO, str]]
+    # Totales por vendedor para mostrar en la UI: {vendedor: {clientes, base, comision, tasa}}
+    metricas_vendedor: dict[str, dict]
     sin_match: set[str]
 
 
@@ -882,6 +884,16 @@ def run_pipeline(fecha_inicio: date, fecha_fin: date,
 
     resumen_global = write_global_summary(summary, unmatched, fecha_inicio, fecha_fin)
 
+    metricas_vendedor = {
+        r['Vendedor']: {
+            'clientes': int(r['Clientes']),
+            'base': r['Base Comisionable MXN'],
+            'comision': r['Comisión MXN'],
+            'tasa': r['Tasa Efectiva'],
+        }
+        for r in summary
+    }
+
     return PipelineResult(
         total_facturas=len(invoices),
         base_comisionable_global=sum(r['Base Comisionable MXN'] for r in summary),
@@ -890,5 +902,6 @@ def run_pipeline(fecha_inicio: date, fecha_fin: date,
         vendedores=vendedores,
         resumen_global=resumen_global,
         reportes_vendedor=reportes_vendedor,
+        metricas_vendedor=metricas_vendedor,
         sin_match=unmatched,
     )

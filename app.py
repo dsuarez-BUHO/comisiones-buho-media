@@ -243,6 +243,12 @@ def _render_resultados() -> None:
     vendedor = st.selectbox("Buscar KAM", resultado.vendedores, index=None,
                             placeholder="Escribe o selecciona un vendedor…")
     if vendedor:
+        m = resultado.metricas_vendedor[vendedor]
+        col_base, col_com, col_cli = st.columns(3)
+        col_base.metric("Base Comisionable", f"${m['base']:,.2f}")
+        col_com.metric("Total Comisión", f"${m['comision']:,.2f}")
+        col_cli.metric("Clientes · Tasa efectiva", f"{m['clientes']} · {m['tasa']:.2%}")
+
         vend_buffer, vend_name = resultado.reportes_vendedor[vendedor]
         vend_buffer.seek(0)
         st.download_button(
