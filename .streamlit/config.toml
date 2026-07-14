@@ -1,0 +1,9 @@
+# Tema de marca — Comisiones Buho Media.
+# Paleta derivada de la identidad Buho (navy/charcoal + naranja). Ajustar aquí los colores.
+[theme]
+base = "light"                        # Fuerza tema claro aunque el SO esté en modo oscuro.
+primaryColor = "#F5821F"              # Naranja Buho (CTA, estados activos).
+backgroundColor = "#FFFFFF"           # Fondo principal.
+secondaryBackgroundColor = "#F4F6F9" # Superficie de inputs/tarjetas.
+textColor = "#1B2430"                 # Navy-charcoal para texto/titulares.
+font = "sans serif"

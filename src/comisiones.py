@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import io
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
 
@@ -818,24 +819,35 @@ class PipelineResult:
     vendedores: list[str]
     resumen_global: tuple[io.BytesIO, str]
     reportes_vendedor: dict[str, tuple[io.BytesIO, str]]
-    # Totales por vendedor para mostrar en la UI: {vendedor: {clientes, base, comision, tasa}}
+    # Totales por vendedor para la UI: {vendedor: {clientes, base, comision, impacto, tasa}}
     metricas_vendedor: dict[str, dict]
+    # Tabla de resumen por vendedor para vista previa (Tasa Efectiva ya ×100).
+    resumen_vendedores: pd.DataFrame
     sin_match: set[str]
 
 
 def run_pipeline(fecha_inicio: date, fecha_fin: date,
-                 sources: DataSources) -> PipelineResult:
+                 sources: DataSources,
+                 progress: Callable[[str], None] | None = None) -> PipelineResult:
     """Orquesta catálogos → facturas → comisiones → reportes en memoria.
 
     No imprime ni escribe a disco: todo se devuelve en un PipelineResult.
     Lanza DataValidationError si una fuente no cumple el esquema esperado.
+
+    `progress` (opcional) es un callback UI-agnóstico (str → None) que se invoca en los
+    límites de fase, para alimentar un indicador de carga con micro-pasos.
     """
+    def _step(mensaje: str) -> None:
+        if progress is not None:
+            progress(mensaje)
+
     if fecha_fin < fecha_inicio:
         raise DataValidationError("La fecha fin no puede ser anterior a la fecha inicio.")
 
     period = f"{fecha_inicio:%d/%m/%Y} – {fecha_fin:%d/%m/%Y}"
 
     # ── Catálogos ─────────────────────────────────────────────────────────────
+    _step("Validando catálogos…")
     cat_mt1  = load_catalog_main(sources.catalogo)
     cat_wing = load_catalog_wing(sources.catalogo)
     cat_bwms = load_catalog_bwms(sources.bwms)
@@ -843,11 +855,13 @@ def run_pipeline(fecha_inicio: date, fecha_fin: date,
     cat_idx  = build_index(catalog)
 
     # ── Facturas con pago validado ────────────────────────────────────────────
+    _step("Cargando facturas y validando pagos…")
     invoices = load_invoices(sources.concentrado, sources.pagos, fecha_inicio, fecha_fin)
     ptotals = (invoices.groupby('partner')['base_comisionable'].sum().to_dict()
                if not invoices.empty else {})
 
     # ── Comisiones (una fila por factura) ─────────────────────────────────────
+    _step("Calculando comisiones…")
     all_rows: list[dict] = []
     unmatched: set[str] = set()
     for _, inv in invoices.iterrows():
@@ -868,6 +882,7 @@ def run_pipeline(fecha_inicio: date, fecha_fin: date,
     detail = pd.DataFrame(all_rows)
 
     # ── Reportes por vendedor + resumen ───────────────────────────────────────
+    _step("Generando reportes…")
     vendedores = sorted(v for v in detail['Vendedor'].unique()
                         if v not in ('nan', 'None', '—', ''))
     reportes_vendedor: dict[str, tuple[io.BytesIO, str]] = {}
@@ -876,9 +891,12 @@ def run_pipeline(fecha_inicio: date, fecha_fin: date,
         vdf = detail[detail['Vendedor'] == v].copy()
         buffer, filename, base, com = write_vendedor_excel(v, vdf, fecha_inicio, fecha_fin)
         reportes_vendedor[v] = (buffer, filename)
+        # Impacto de cobranza del vendedor = comisión base − comisión ajustada.
+        impacto = round(vdf['Comisión Base MXN'].sum() - vdf['Comisión Ajustada MXN'].sum(), 2)
         summary.append({
             'Vendedor': v, 'Clientes': vdf['Cliente'].nunique(),
             'Base Comisionable MXN': round(base, 2), 'Comisión MXN': round(com, 2),
+            'Impacto Cobranza MXN': impacto,
             'Tasa Efectiva': com/base if base else 0, 'Archivo': filename,
         })
 
@@ -889,10 +907,23 @@ def run_pipeline(fecha_inicio: date, fecha_fin: date,
             'clientes': int(r['Clientes']),
             'base': r['Base Comisionable MXN'],
             'comision': r['Comisión MXN'],
+            'impacto': r['Impacto Cobranza MXN'],
             'tasa': r['Tasa Efectiva'],
         }
         for r in summary
     }
+
+    # Tabla de vista previa: Tasa ×100 para que el formato "%%" renderice bien en la UI.
+    resumen_vendedores = pd.DataFrame([
+        {
+            'Vendedor': r['Vendedor'], 'Clientes': r['Clientes'],
+            'Base Comisionable MXN': r['Base Comisionable MXN'],
+            'Comisión MXN': r['Comisión MXN'],
+            'Impacto Cobranza MXN': r['Impacto Cobranza MXN'],
+            'Tasa Efectiva': round(r['Tasa Efectiva'] * 100, 2),
+        }
+        for r in summary
+    ])
 
     return PipelineResult(
         total_facturas=len(invoices),
@@ -903,5 +934,6 @@ def run_pipeline(fecha_inicio: date, fecha_fin: date,
         resumen_global=resumen_global,
         reportes_vendedor=reportes_vendedor,
         metricas_vendedor=metricas_vendedor,
+        resumen_vendedores=resumen_vendedores,
         sin_match=unmatched,
     )
