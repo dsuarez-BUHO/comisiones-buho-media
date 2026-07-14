@@ -1,0 +1,14 @@
+# ── Credenciales y secretos (NUNCA subir al repo) ──────────────────────────────
+clave-sa-buho-comisiones.json
+*.json
+.streamlit/secrets.toml
+
+# ── Datos reales de clientes/comisiones (viven solo en local o en Drive) ───────
+*.xlsx
+
+# ── Python ─────────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
