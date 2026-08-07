@@ -45,3 +45,17 @@ README_OPERACIONES.md   # guía para Finanzas/Operaciones
 - Credenciales solo vía `st.secrets`; nada hardcodeado.
 - La Service Account debe tener acceso (editor) a la carpeta de Drive.
 - Rotar la llave de la SA si se expuso.
+
+## Historial de migración
+
+- **2026-08-07** — Repo migrado desde el repositorio personal del autor original
+  (`dsuarez-BUHO/comisiones-buho-media`) al repositorio de la organización, conservando
+  el historial completo de commits.
+- **Tras la migración, las siguientes credenciales deben rotarse** (la rotación es manual,
+  fuera del repo):
+  - Service Account de GCP (llave privada + `client_email`) — referenciada en
+    `.streamlit/secrets.toml` bajo `[gcp_service_account]`
+  - Credenciales del login de la app — referenciadas en `.streamlit/secrets.toml`
+    bajo `[auth] username` / `password`
+  - Una vez rotadas, pegar los nuevos valores en **Streamlit Community Cloud →
+    Settings → Secrets** y redirigir el deploy al repo nuevo.
