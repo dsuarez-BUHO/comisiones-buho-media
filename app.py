@@ -331,21 +331,26 @@ def _sync_rango_bounds(rango_disp: tuple[date, date] | None) -> None:
 def _render_controles(rango_disp: tuple[date, date] | None) -> None:
     """Tarjeta de generación: rango disponible + selector de período + botón de procesar."""
     with st.container(border=True):
+        col_badge, col_refresh = st.columns([8, 2])
         if rango_disp:
             dmin, dmax = rango_disp
-            st.markdown(
+            col_badge.markdown(
                 f'<div class="buho-badge">📅 Datos disponibles: pagos del '
                 f'<b>{dmin:%d/%m/%Y}</b> al <b>{dmax:%d/%m/%Y}</b></div>',
                 unsafe_allow_html=True)
             st.date_input(
                 "Período de corte (fecha de pago)", value=(dmin, dmax),
-                min_value=dmin, max_value=dmax, format="DD/MM/YYYY",
+                format="DD/MM/YYYY",
                 key="rango", on_change=_reset_resultado)
         else:
             today = date.today()
             st.date_input(
                 "Período de corte (fecha de pago)", value=(today.replace(day=1), today),
                 format="DD/MM/YYYY", key="rango", on_change=_reset_resultado)
+        if col_refresh.button("🔄 Refrescar datos", help="Limpia la caché y vuelve a leer los archivos desde Google Drive."):
+            clear_drive_cache()
+            _reset_resultado()
+            st.rerun()
 
         if st.button("Procesar Comisiones", type="primary"):
             rango = st.session_state["rango"]
