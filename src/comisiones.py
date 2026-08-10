@@ -301,8 +301,16 @@ def load_bwms_from_sheets(spreadsheet_id: str) -> pd.DataFrame:
     if not values:
         raise DataValidationError("El Sheets de Catálogo BWMS está vacío.")
     headers, rows = values[0], values[1:]
+    # Ignorar columnas con encabezado vacío (datos accidentales en columnas lejanas).
+    valid_idx = [i for i, h in enumerate(headers) if str(h).strip()]
+    headers = [headers[i] for i in valid_idx]
+    # La Sheets API omite celdas vacías al final de cada fila; se normalizan
+    # todas las filas a la longitud del encabezado (recorte + relleno).
+    rows = [[row[i] if i < len(row) else "" for i in valid_idx] for row in rows]
     raw = pd.DataFrame(rows, columns=headers)
     raw.columns = raw.columns.astype(str).str.strip()
+    # Descartar filas completamente vacías (típico al fondo de un Sheets).
+    raw = raw[raw["Cliente"].astype(str).str.strip() != ""].copy()
     validate_columns(raw, "bwms", "Catálogo BWMS (Sheets)")
     df = pd.DataFrame({
         "Name":            raw["Cliente"].astype(str).str.strip(),
