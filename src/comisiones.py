@@ -77,6 +77,9 @@ CANONICAL_NAMES: dict[str, str] = {
 # Lectura + escritura: la app descarga las fuentes y también permite subirlas a Drive.
 DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive"]
 
+# Solo lectura del Sheets del catálogo BWMS.
+SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+
 XLSX_MIMETYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -182,6 +185,14 @@ def get_drive_service():
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 
+@st.cache_resource(show_spinner=False)
+def get_sheets_service():
+    """Cliente de Google Sheets autenticado con la Service Account de st.secrets."""
+    creds = Credentials.from_service_account_info(
+        dict(st.secrets["gcp_service_account"]), scopes=SHEETS_SCOPES)
+    return build("sheets", "v4", credentials=creds, cache_discovery=False)
+
+
 def _is_valid_excel(name: str) -> bool:
     """Descarta temporales de Excel ('~$…') y exige extensión .xlsx real."""
     return name.endswith(".xlsx") and not name.startswith("~$")
@@ -238,28 +249,78 @@ def _download_bytes(file_id: str, modified: str) -> bytes:
 
 @dataclass
 class DataSources:
-    """Contenido crudo (bytes) de los 4 Excel. Los loaders envuelven cada campo en
-    un `io.BytesIO` fresco por lectura (evita problemas de puntero al leer 2 hojas)."""
+    """Contenido crudo (bytes) de los Excel de Drive. `bwms` es None porque se
+    lee en tiempo real desde Google Sheets (catálogo que el director actualiza)."""
     catalogo: bytes
-    bwms: bytes
+    bwms: bytes | None
     concentrado: bytes
     pagos: bytes
 
 
 @st.cache_data(show_spinner="Descargando archivos desde Google Drive…")
 def load_data_sources_from_drive(folder_id: str) -> DataSources:
-    """Resuelve los 4 archivos de la carpeta y los descarga a memoria."""
-    resueltos = _resolve_file_ids(folder_id)
-    return DataSources(**{
-        clave: _download_bytes(meta["id"], meta["modifiedTime"])
-        for clave, meta in resueltos.items()
-    })
+    """Resuelve los 3 archivos de Drive y los descarga a memoria.
+    BWMS se omite aquí — se lee desde Google Sheets en run_pipeline."""
+    patterns_drive = {k: v for k, v in FILE_PATTERNS.items() if k != "bwms"}
+    archivos = [f for f in _list_folder(folder_id) if _is_valid_excel(f["name"])]
+    resueltos: dict[str, dict] = {}
+    for clave, prefijo in patterns_drive.items():
+        match = next((f for f in archivos if f["name"].startswith(prefijo)), None)
+        if match is None:
+            raise DataValidationError(
+                f"No se encontró en Drive un archivo .xlsx que empiece con '{prefijo}'.")
+        resueltos[clave] = match
+    return DataSources(
+        catalogo=_download_bytes(resueltos["catalogo"]["id"], resueltos["catalogo"]["modifiedTime"]),
+        bwms=None,
+        concentrado=_download_bytes(resueltos["concentrado"]["id"], resueltos["concentrado"]["modifiedTime"]),
+        pagos=_download_bytes(resueltos["pagos"]["id"], resueltos["pagos"]["modifiedTime"]),
+    )
 
 
 def clear_drive_cache() -> None:
-    """Invalida las cachés de descarga tras subir/actualizar archivos en Drive."""
+    """Invalida las cachés de descarga (Drive y Sheets)."""
     load_data_sources_from_drive.clear()
     _download_bytes.clear()
+    load_bwms_from_sheets.clear()
+
+
+@st.cache_data(show_spinner=False)
+def load_bwms_from_sheets(spreadsheet_id: str) -> pd.DataFrame:
+    """Lee el catálogo BWMS desde Google Sheets (hoja 'clientes').
+
+    Aplica las mismas transformaciones que load_catalog_bwms para que el pipeline
+    no distinga el origen de los datos.
+    Cache-key = spreadsheet_id. El botón 'Refrescar datos' la invalida vía clear_drive_cache().
+    """
+    service = get_sheets_service()
+    result = (service.spreadsheets().values()
+              .get(spreadsheetId=spreadsheet_id, range="clientes")
+              .execute())
+    values = result.get("values", [])
+    if not values:
+        raise DataValidationError("El Sheets de Catálogo BWMS está vacío.")
+    headers, rows = values[0], values[1:]
+    raw = pd.DataFrame(rows, columns=headers)
+    raw.columns = raw.columns.astype(str).str.strip()
+    validate_columns(raw, "bwms", "Catálogo BWMS (Sheets)")
+    df = pd.DataFrame({
+        "Name":            raw["Cliente"].astype(str).str.strip(),
+        "Vendedor":        raw["KAM"].astype(str).str.strip(),
+        "Plan":            raw.get("Plan Comisiones", "D").astype(str).apply(_normalize_plan),
+        "Tipo de Venta":   raw.get("Tipo de Venta", "Outbound Sale").astype(str).apply(_normalize_tipo_venta),
+        "Mes Inicio":      pd.to_numeric(raw.get("Mes Inicio", 1), errors="coerce").fillna(1).astype(int),
+        "Año Inicio":      pd.to_numeric(raw.get("Año Inicio", 2024), errors="coerce").fillna(2024).astype(int),
+        "Nombre Fiscal":   raw.get("Nombre Fiscal", pd.Series(dtype=str)).astype(str).str.strip(),
+        "Nombre2":         raw.get("Partner/Nombre", pd.Series(dtype=str)).astype(str).str.strip(),
+        "Margen":          pd.to_numeric(raw.get("Margen", 0.30), errors="coerce").fillna(0.30),
+        "Canal":           "WMS",
+        "Sales Lifecycle": raw.get("Sales Lifecycle", "Transition").astype(str).apply(_normalize_lifecycle),
+        "Farmer":          raw.get("Farmer", pd.Series(dtype=str)).astype(str).str.strip(),
+        "_source":         "BWMS",
+    })
+    df = df[~df["Vendedor"].isin(["nan", "None", "", "NaN"])].copy()
+    return df.reset_index(drop=True)
 
 
 # ── Subida de fuentes a Drive (administración) ─────────────────────────────────
@@ -850,7 +911,8 @@ def run_pipeline(fecha_inicio: date, fecha_fin: date,
     _step("Validando catálogos…")
     cat_mt1  = load_catalog_main(sources.catalogo)
     cat_wing = load_catalog_wing(sources.catalogo)
-    cat_bwms = load_catalog_bwms(sources.bwms)
+    bwms_id  = st.secrets["drive"]["bwms_spreadsheet_id"]
+    cat_bwms = load_bwms_from_sheets(bwms_id)
     catalog  = merge_all_catalogs(cat_mt1, cat_bwms, cat_wing)
     cat_idx  = build_index(catalog)
 
